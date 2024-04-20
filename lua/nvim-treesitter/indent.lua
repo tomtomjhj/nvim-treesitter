@@ -62,27 +62,9 @@ local function find_delimiter(bufnr, node, delimiter)
   end
 end
 
----Memoize a function using hash_fn to hash the arguments.
----@generic F: function
----@param fn F
----@param hash_fn fun(...): any
----@return F
-local function memoize(fn, hash_fn)
-  local cache = setmetatable({}, { __mode = "kv" }) ---@type table<any,any>
-
-  return function(...)
-    local key = hash_fn(...)
-    if cache[key] == nil then
-      local v = fn(...) ---@type any
-      cache[key] = v ~= nil and v or vim.NIL
-    end
-
-    local v = cache[key]
-    return v ~= vim.NIL and v or nil
-  end
-end
-
-local get_indents = memoize(function(bufnr, root, lang)
+---@param root TSNode
+---@param node TSNode
+local function get_indents(bufnr, root, lang, node)
   local map = {
     ["indent.auto"] = {},
     ["indent.begin"] = {},
@@ -99,16 +81,23 @@ local get_indents = memoize(function(bufnr, root, lang)
   if not query then
     return map
   end
-  for id, node, metadata in query:iter_captures(root, bufnr) do
-    if query.captures[id]:sub(1, 1) ~= "_" then
-      map[query.captures[id]][node:id()] = metadata or {}
+
+  local srow, _, erow, ecol = node:range()
+  if ecol > 0 then
+    erow = erow + 1
+  end
+
+  for _, match, metadata in query:iter_matches(root, bufnr, srow, erow, { all = true }) do
+    for id, nodes in pairs(match) do
+      local name = query.captures[id]
+      if name:sub(1, 1) ~= "_" then
+        map[name][nodes[1]:id()] = metadata or {}
+      end
     end
   end
 
   return map
-end, function(bufnr, root, lang)
-  return tostring(bufnr) .. root:id() .. "_" .. lang
-end)
+end
 
 ---@param lnum number (1-indexed)
 function M.get_indent(lnum)
@@ -147,7 +136,6 @@ function M.get_indent(lnum)
     return 0
   end
 
-  local q = get_indents(vim.api.nvim_get_current_buf(), root, lang_tree:lang())
   local is_empty_line = string.match(getline(lnum), "^%s*$") ~= nil
   local node ---@type TSNode
   if is_empty_line then
@@ -169,12 +157,11 @@ function M.get_indent(lnum)
         node = get_last_node_at_line(root, prevlnum, col)
       end
     end
-    if q["indent.end"][node:id()] then
-      node = get_first_node_at_line(root, lnum)
-    end
   else
     node = get_first_node_at_line(root, lnum)
   end
+
+  local q = get_indents(bufnr, root, lang_tree:lang(), node)
 
   local indent_size = vim.fn.shiftwidth()
   local indent = 0
